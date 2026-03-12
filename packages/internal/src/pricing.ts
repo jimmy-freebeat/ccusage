@@ -1,3 +1,5 @@
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { Result } from '@praha/byethrow';
 import * as v from 'valibot';
 
@@ -67,6 +69,11 @@ export type LiteLLMPricingFetcherOptions = {
 	offlineLoader?: () => Promise<Record<string, LiteLLMModelPricing>>;
 	url?: string;
 	providerPrefixes?: string[];
+	/** Path to persist fetched pricing data on disk. When set, the fetcher caches
+	 *  fetched data to this file and reuses it on subsequent runs until the TTL expires. */
+	diskCachePath?: string;
+	/** How long (ms) the disk cache is valid. Defaults to 7 days. */
+	diskCacheTTL?: number;
 };
 
 const DEFAULT_PROVIDER_PREFIXES = [
@@ -99,6 +106,8 @@ export class LiteLLMPricingFetcher implements Disposable {
 	private readonly offlineLoader?: () => Promise<Record<string, LiteLLMModelPricing>>;
 	private readonly url: string;
 	private readonly providerPrefixes: string[];
+	private readonly diskCachePath?: string;
+	private readonly diskCacheTTL: number;
 
 	constructor(options: LiteLLMPricingFetcherOptions = {}) {
 		this.logger = createLogger(options.logger);
@@ -106,6 +115,8 @@ export class LiteLLMPricingFetcher implements Disposable {
 		this.offlineLoader = options.offlineLoader;
 		this.url = options.url ?? LITELLM_PRICING_URL;
 		this.providerPrefixes = options.providerPrefixes ?? DEFAULT_PROVIDER_PREFIXES;
+		this.diskCachePath = options.diskCachePath;
+		this.diskCacheTTL = options.diskCacheTTL ?? 7 * 24 * 60 * 60 * 1000;
 	}
 
 	[Symbol.dispose](): void {
@@ -114,6 +125,43 @@ export class LiteLLMPricingFetcher implements Disposable {
 
 	clearCache(): void {
 		this.cachedPricing = null;
+	}
+
+	private loadDiskCache = Result.try({
+		try: async () => {
+			if (this.diskCachePath == null) {
+				throw new Error('No disk cache path configured');
+			}
+			const raw = readFileSync(this.diskCachePath, 'utf-8');
+			const parsed: unknown = JSON.parse(raw);
+			if (typeof parsed !== 'object' || parsed === null) {
+				throw new Error('Invalid disk cache format');
+			}
+			const { timestamp, data } = parsed as { timestamp?: unknown; data?: unknown };
+			if (typeof timestamp !== 'number' || typeof data !== 'object' || data === null) {
+				throw new Error('Invalid disk cache format');
+			}
+			if (Date.now() - timestamp > this.diskCacheTTL) {
+				throw new Error('Disk cache expired');
+			}
+			const pricing = new Map(Object.entries(data as Record<string, LiteLLMModelPricing>));
+			this.cachedPricing = pricing;
+			this.logger.info(`Loaded pricing for ${pricing.size} models from disk cache`);
+			return pricing;
+		},
+		catch: (error) => new Error('Disk cache miss', { cause: error }),
+	});
+
+	private saveDiskCache(pricing: Map<string, LiteLLMModelPricing>): void {
+		if (this.diskCachePath == null) {return;}
+		try {
+			mkdirSync(dirname(this.diskCachePath), { recursive: true });
+			const cache = { timestamp: Date.now(), data: Object.fromEntries(pricing) };
+			writeFileSync(this.diskCachePath, JSON.stringify(cache));
+			this.logger.debug(`Saved pricing cache to ${this.diskCachePath}`);
+		} catch {
+			// Best-effort: ignore write errors
+		}
 	}
 
 	private loadOfflinePricing = Result.try({
@@ -158,46 +206,55 @@ export class LiteLLMPricingFetcher implements Disposable {
 					return this.loadOfflinePricing();
 				}
 
-				this.logger.warn('Fetching latest model pricing from LiteLLM...');
+				// Check disk cache before hitting the network
 				return Result.pipe(
-					Result.try({
-						try: fetch(this.url),
-						catch: (error) =>
-							new Error('Failed to fetch model pricing from LiteLLM', { cause: error }),
-					}),
-					Result.andThrough((response) => {
-						if (!response.ok) {
-							return Result.fail(new Error(`Failed to fetch pricing data: ${response.statusText}`));
-						}
-						return Result.succeed();
-					}),
-					Result.andThen(async (response) =>
-						Result.try({
-							try: response.json() as Promise<Record<string, unknown>>,
-							catch: (error) => new Error('Failed to parse pricing data', { cause: error }),
-						}),
-					),
-					Result.map((data) => {
-						const pricing = new Map<string, LiteLLMModelPricing>();
-						for (const [modelName, modelData] of Object.entries(data)) {
-							if (typeof modelData !== 'object' || modelData == null) {
-								continue;
-							}
+					this.loadDiskCache(),
+					Result.orElse(async () => {
+						this.logger.warn('Fetching latest model pricing from LiteLLM...');
+						return Result.pipe(
+							Result.try({
+								try: fetch(this.url),
+								catch: (error) =>
+									new Error('Failed to fetch model pricing from LiteLLM', { cause: error }),
+							}),
+							Result.andThrough((response) => {
+								if (!response.ok) {
+									return Result.fail(
+										new Error(`Failed to fetch pricing data: ${response.statusText}`),
+									);
+								}
+								return Result.succeed();
+							}),
+							Result.andThen(async (response) =>
+								Result.try({
+									try: response.json() as Promise<Record<string, unknown>>,
+									catch: (error) => new Error('Failed to parse pricing data', { cause: error }),
+								}),
+							),
+							Result.map((data) => {
+								const pricing = new Map<string, LiteLLMModelPricing>();
+								for (const [modelName, modelData] of Object.entries(data)) {
+									if (typeof modelData !== 'object' || modelData == null) {
+										continue;
+									}
 
-							const parsed = v.safeParse(liteLLMModelPricingSchema, modelData);
-							if (!parsed.success) {
-								continue;
-							}
+									const parsed = v.safeParse(liteLLMModelPricingSchema, modelData);
+									if (!parsed.success) {
+										continue;
+									}
 
-							pricing.set(modelName, parsed.output);
-						}
-						return pricing;
+									pricing.set(modelName, parsed.output);
+								}
+								return pricing;
+							}),
+							Result.inspect((pricing) => {
+								this.cachedPricing = pricing;
+								this.saveDiskCache(pricing);
+								this.logger.info(`Loaded pricing for ${pricing.size} models`);
+							}),
+							Result.orElse(async (error) => this.handleFallbackToCachedPricing(error)),
+						);
 					}),
-					Result.inspect((pricing) => {
-						this.cachedPricing = pricing;
-						this.logger.info(`Loaded pricing for ${pricing.size} models`);
-					}),
-					Result.orElse(async (error) => this.handleFallbackToCachedPricing(error)),
 				);
 			}),
 		);

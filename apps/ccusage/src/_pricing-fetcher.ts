@@ -1,5 +1,8 @@
+import path from 'node:path';
 import { LiteLLMPricingFetcher } from '@ccusage/internal/pricing';
 import { Result } from '@praha/byethrow';
+import { xdgCache } from 'xdg-basedir';
+import { USER_HOME_DIR } from './_consts.ts';
 import { prefetchClaudePricing } from './_macro.ts' with { type: 'macro' };
 import { logger } from './logger.ts';
 
@@ -13,6 +16,12 @@ const CLAUDE_PROVIDER_PREFIXES = [
 
 const PREFETCHED_CLAUDE_PRICING = prefetchClaudePricing();
 
+const PRICING_CACHE_PATH = path.join(
+	xdgCache ?? path.join(USER_HOME_DIR, '.cache'),
+	'ccusage',
+	'pricing-cache.json',
+);
+
 export class PricingFetcher extends LiteLLMPricingFetcher {
 	constructor(offline = false) {
 		super({
@@ -20,6 +29,7 @@ export class PricingFetcher extends LiteLLMPricingFetcher {
 			offlineLoader: async () => PREFETCHED_CLAUDE_PRICING,
 			logger,
 			providerPrefixes: CLAUDE_PROVIDER_PREFIXES,
+			diskCachePath: PRICING_CACHE_PATH,
 		});
 	}
 }
