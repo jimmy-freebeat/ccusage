@@ -17,7 +17,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { createFixture } from 'fs-fixture';
 
 import { Hono } from 'hono/tiny';
-import { name, version } from '../package.json';
+import pkg from '../package.json' with { type: 'json' };
 
 import {
 	ccusageParametersSchema,
@@ -34,6 +34,7 @@ import {
 	getCodexMonthly,
 } from './codex.ts';
 import { defaultOptions } from './mcp-utils.ts';
+const { name, version } = pkg;
 
 /**
  * Creates an MCP server with tools for showing usage reports.

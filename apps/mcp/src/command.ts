@@ -4,8 +4,9 @@ import { serve } from '@hono/node-server';
 import { getClaudePaths } from 'ccusage/data-loader';
 import { logger } from 'ccusage/logger';
 import { cli, define } from 'gunshi';
-import { description, name, version } from '../package.json';
+import pkg from '../package.json' with { type: 'json' };
 import { createMcpHttpApp, createMcpServer, startMcpServerStdio } from './mcp.ts';
+const { description, name, version } = pkg;
 
 type McpType = (typeof MCP_TYPE_CHOICES)[number];
 type Mode = LoadOptions['mode'];

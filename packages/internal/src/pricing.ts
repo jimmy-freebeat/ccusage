@@ -153,7 +153,9 @@ export class LiteLLMPricingFetcher implements Disposable {
 	});
 
 	private saveDiskCache(pricing: Map<string, LiteLLMModelPricing>): void {
-		if (this.diskCachePath == null) {return;}
+		if (this.diskCachePath == null) {
+			return;
+		}
 		try {
 			mkdirSync(dirname(this.diskCachePath), { recursive: true });
 			const cache = { timestamp: Date.now(), data: Object.fromEntries(pricing) };

@@ -1,7 +1,8 @@
 import process from 'node:process';
 import { cli } from 'gunshi';
-import { description, name, version } from '../package.json';
+import pkg from '../package.json' with { type: 'json' };
 import { dailyCommand, monthlyCommand, sessionCommand, weeklyCommand } from './commands/index.ts';
+const { description, name, version } = pkg;
 
 const subCommands = new Map([
 	['daily', dailyCommand],

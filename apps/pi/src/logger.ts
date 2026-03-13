@@ -1,6 +1,7 @@
 import { createLogger, log as internalLog } from '@ccusage/internal/logger';
 
-import { name } from '../package.json';
+import pkg from '../package.json' with { type: 'json' };
+const { name } = pkg;
 
 export const logger = createLogger(name);
 
